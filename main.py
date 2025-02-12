@@ -15,8 +15,8 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--width", help='cap width', type=int, default=640)
-    parser.add_argument("--height", help='cap height', type=int, default=360)
+    parser.add_argument("--width", help='cap width', type=int, default=1280)
+    parser.add_argument("--height", help='cap height', type=int, default=720)
 
     parser.add_argument('--static_image_mode', action='store_true')
     parser.add_argument("--model_complexity",
@@ -110,6 +110,9 @@ def main():
                 color=color,
                 bg_color=bg_color,
             )
+            
+            # Thêm phân tích tư thế
+            debug_image01 = analyze_posture(debug_image01, results.pose_landmarks)
 
         cv.putText(debug_image01, "FPS:" + str(display_fps), (10, 30),
                    cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv.LINE_AA)
@@ -501,6 +504,202 @@ def draw_landmarks(
                 0] > visibility_th:
             cv.line(image, landmark_point[30][1], landmark_point[32][1],
                     (0, 255, 0), 2)
+    return image
+
+def check_neck_angle(landmarks):
+    """Kiểm tra góc cổ"""
+    # Lấy các điểm mốc cần thiết
+    nose = landmarks.landmark[0]
+    left_ear = landmarks.landmark[7]
+    right_ear = landmarks.landmark[8]
+    left_shoulder = landmarks.landmark[11]
+    right_shoulder = landmarks.landmark[12]
+    
+    # Tính điểm trung bình của tai và vai
+    ear_x = (left_ear.x + right_ear.x) / 2
+    ear_y = (left_ear.y + right_ear.y) / 2
+    shoulder_x = (left_shoulder.x + right_shoulder.x) / 2
+    shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+    
+    # Tính góc giữa cổ và trục dọc
+    neck_angle = math.degrees(math.atan2(ear_x - shoulder_x, ear_y - shoulder_y))
+    
+    return abs(neck_angle)
+
+def check_back_posture(landmarks):
+    """Kiểm tra tư thế lưng chi tiết hơn"""
+    # Lấy các điểm mốc quan trọng
+    nose = landmarks.landmark[0]  # Thêm mũi để tính góc đầu
+    left_shoulder = landmarks.landmark[11]
+    right_shoulder = landmarks.landmark[12]
+    left_hip = landmarks.landmark[23]
+    right_hip = landmarks.landmark[24]
+    left_knee = landmarks.landmark[25]
+    right_knee = landmarks.landmark[26]
+    
+    # Tính điểm trung bình
+    nose_x = nose.x
+    nose_y = nose.y
+    nose_z = nose.z
+    
+    shoulder_x = (left_shoulder.x + right_shoulder.x) / 2
+    shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+    shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
+    
+    hip_x = (left_hip.x + right_hip.x) / 2
+    hip_y = (left_hip.y + right_hip.y) / 2
+    hip_z = (left_hip.z + right_hip.z) / 2
+    
+    knee_x = (left_knee.x + right_knee.x) / 2
+    knee_y = (left_knee.y + right_knee.y) / 2
+    knee_z = (left_knee.z + right_knee.z) / 2
+    
+    # Tính các góc
+    # 1. Góc nghiêng đầu (head tilt)
+    head_tilt = math.degrees(math.atan2(nose_x - shoulder_x, nose_y - shoulder_y))
+    
+    # 2. Góc nghiêng trước/sau của lưng
+    forward_tilt = math.degrees(math.atan2(shoulder_z - hip_z, shoulder_y - hip_y))
+    
+    # 3. Góc nghiêng sang trái/phải
+    side_tilt = math.degrees(math.atan2(shoulder_x - hip_x, shoulder_y - hip_y))
+    
+    # 4. Góc giữa lưng và đùi (góc ngồi)
+    hip_angle = math.degrees(math.atan2(
+        math.sqrt((hip_x - knee_x)**2 + (hip_z - knee_z)**2),
+        hip_y - knee_y
+    ))
+    
+    # Phân tích tư thế
+    posture_status = {
+        'straight': True,
+        'messages': [],
+        'status': 'Tot'
+    }
+    
+    # Điều chỉnh các ngưỡng chuẩn cho tư thế ngồi
+    THRESHOLDS = {
+        'head_tilt': {'min': -180, 'max': -170},  # Khoảng -177° là chuẩn
+        'forward_tilt': {'min': -170, 'max': -155},  # Khoảng -163° là chuẩn
+        'side_tilt': {'min': 170, 'max': 180},  # Khoảng 176° là chuẩn
+        'hip_angle': {'min': 170, 'max': 180}  # Khoảng 176° là chuẩn
+    }
+    
+    # Kiểm tra góc nghiêng đầu
+    if head_tilt < THRESHOLDS['head_tilt']['min'] or head_tilt > THRESHOLDS['head_tilt']['max']:
+        posture_status['straight'] = False
+        if head_tilt < THRESHOLDS['head_tilt']['min']:
+            posture_status['messages'].append(f"Dau nga ve truoc ({head_tilt:.1f}°)")
+        else:
+            posture_status['messages'].append(f"Dau nga ve sau ({head_tilt:.1f}°)")
+    
+    # Kiểm tra góc nghiêng trước/sau của lưng
+    if forward_tilt < THRESHOLDS['forward_tilt']['min']:
+        posture_status['straight'] = False
+        posture_status['messages'].append(f"Lung nga ve truoc ({forward_tilt:.1f}°)")
+    elif forward_tilt > THRESHOLDS['forward_tilt']['max']:
+        posture_status['straight'] = False
+        posture_status['messages'].append(f"Lung nga ve sau ({forward_tilt:.1f}°)")
+    
+    # Kiểm tra góc nghiêng sang trái/phải
+    if side_tilt < THRESHOLDS['side_tilt']['min']:
+        posture_status['straight'] = False
+        posture_status['messages'].append(f"Lung nghieng trai ({side_tilt:.1f}°)")
+    elif side_tilt > THRESHOLDS['side_tilt']['max']:
+        posture_status['straight'] = False
+        posture_status['messages'].append(f"Lung nghieng phai ({side_tilt:.1f}°)")
+    
+    # Kiểm tra góc ngồi
+    if hip_angle < THRESHOLDS['hip_angle']['min']:
+        posture_status['straight'] = False
+        posture_status['messages'].append(f"Ngoi qua thang ({hip_angle:.1f}°)")
+    elif hip_angle > THRESHOLDS['hip_angle']['max']:
+        posture_status['straight'] = False
+        posture_status['messages'].append(f"Ngoi qua nga ({hip_angle:.1f}°)")
+            
+    posture_status['angles'] = {
+        'head_tilt': head_tilt,
+        'forward_tilt': forward_tilt,
+        'side_tilt': side_tilt,
+        'hip_angle': hip_angle
+    }
+    
+    # Đánh giá tổng thể
+    if len(posture_status['messages']) == 0:
+        posture_status['status'] = 'Tot'
+    elif len(posture_status['messages']) <= 2:
+        posture_status['status'] = 'Trung binh'
+    else:
+        posture_status['status'] = 'Xau'
+    
+    return posture_status
+
+def check_eye_screen_distance(landmarks, image_width):
+    """Ước tính khoảng cách từ mắt đến màn hình"""
+    left_eye = landmarks.landmark[2]
+    right_eye = landmarks.landmark[5]
+    
+    # Tính khoảng cách giữa 2 mắt theo pixel
+    eye_distance = abs(left_eye.x - right_eye.x) * image_width
+    
+    # Ước tính khoảng cách (công thức đơn giản hóa)
+    # Giả sử khoảng cách thực giữa 2 mắt là 6.3cm
+    distance_cm = (6.3 * image_width) / (eye_distance * 10)
+    
+    return distance_cm
+
+def analyze_posture(image, landmarks):
+    """Phân tích tư thế và hiển thị cảnh báo"""
+    image_height, image_width = image.shape[:2]
+    
+    # Kiểm tra các thông số
+    back_posture = check_back_posture(landmarks)
+    eye_distance = check_eye_screen_distance(landmarks, image_width)
+    
+    # Chuẩn bị thông báo
+    messages = []
+    
+    # Thêm các cảnh báo về tư thế
+    messages.extend(back_posture['messages'])
+    
+    # Kiểm tra khoảng cách màn hình
+    if eye_distance < 4:
+        messages.append(f"Khoang cach man hinh qua gan ({eye_distance:.1f}cm)")
+    elif eye_distance > 12:
+        messages.append(f"Khoang cach man hinh qua xa ({eye_distance:.1f}cm)")
+        
+    # Hiển thị thông số
+    y_pos = 60  # Đổi từ 30 thành 60 để tránh overlap với FPS
+    
+    # Hiển thị trạng thái tổng thể
+    status_color = (0, 255, 0) if back_posture['status'] == 'Tot' else \
+                  (0, 255, 255) if back_posture['status'] == 'Trung binh' else \
+                  (0, 0, 255)
+    cv.putText(image, f"Trang thai: {back_posture['status']}", (10, y_pos),
+               cv.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+    y_pos += 30
+    
+    # Cập nhật hiển thị các góc với ngưỡng mới
+    angles = back_posture['angles']
+    cv.putText(image, f"Goc dau: {angles['head_tilt']:.1f}° (chuan: -180° ~ -170°)", 
+               (10, y_pos), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    y_pos += 25
+    cv.putText(image, f"Goc lung truoc/sau: {angles['forward_tilt']:.1f}° (chuan: -170° ~ -155°)", 
+               (10, y_pos), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    y_pos += 25
+    cv.putText(image, f"Goc lung trai/phai: {angles['side_tilt']:.1f}° (chuan: 170° ~ 180°)", 
+               (10, y_pos), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    y_pos += 25
+    cv.putText(image, f"Goc ngoi: {angles['hip_angle']:.1f}° (chuan: 170° ~ 180°)", 
+               (10, y_pos), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+    # Hiển thị cảnh báo
+    y_pos += 30
+    for msg in messages:
+        cv.putText(image, msg, (10, y_pos),
+                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        y_pos += 25
+    
     return image
 
 if __name__ == '__main__':
